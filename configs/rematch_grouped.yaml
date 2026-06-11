@@ -1,0 +1,24 @@
+# Grouped re-matching — mirrors perception_eval label grouping
+# - motorbike GT can match bicycle/motorbike EST (and vice versa)
+# - Otherwise same as rematch_default: 2.0m, no filters, Hungarian
+#
+# Background: many models emit "bicycle" for motorbike objects because
+# they share similar shapes. Strict matching collapses motorbike recall
+# to near zero. This config mirrors the original perception_eval grouping.
+
+label: rematch_grouped
+
+csv_path: path/to/current.csv   # required: override via --csv or edit here
+output_dir: output/rematch/grouped
+
+distance_thresholds_m:
+  __default__: 2.0
+
+label_match: grouped
+label_groups:
+  - [motorbike, bicycle]   # treat as one class for matching
+
+confidence_min: 0.0
+visibility_exclude_from_gt: []
+
+algorithm: hungarian

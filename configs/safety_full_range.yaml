@@ -1,0 +1,30 @@
+# Full-range evaluation (highway / high-speed scenario)
+# - 0-150 m range
+# - Exclude only NONE visibility
+
+label: full_range_0_150m
+
+csv_path: path/to/current.csv   # required: override via --csv or edit here
+output_dir: output/safety_metrics/full_range
+
+classes:
+  - car
+  - truck
+  - bus
+  - pedestrian
+
+dist_max_m: 150
+
+visibility_exclude:
+  - NONE
+
+match_thresholds_m: [0.5, 1.0, 2.0, 4.0]
+
+speed_error_clip_mps: 50.0
+
+ate_norm_m: 2.0
+aoe_norm_rad: 3.141592653589793
+ave_norm_mps: 10.0
+map_weight_in_nds: 5
+
+class_weights: null
