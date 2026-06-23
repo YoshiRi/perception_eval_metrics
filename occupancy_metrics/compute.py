@@ -18,21 +18,34 @@ def compute_occupancy_risk(
     pred_grid: OccupancyGrid,
     ego_state: EgoState | None = None,
     distance_weight_type: str = "inverse_square",
+    gt_full_grid: OccupancyGrid | None = None,
+    distance_map: np.ndarray | None = None,
 ) -> Dict:
     """
     Compute occupancy-based safety and availability risk.
 
     Safety Risk:       GT Occupied ∩ Pred Free  (false free)
-    Availability Risk: GT Free ∩ Pred Occupied  (false occupied)
+    Availability Risk: GT_full Free ∩ Pred Occupied  (false occupied)
+
+    gt_full_grid: GT grid including visibility-excluded objects.
+        When provided, availability risk uses this grid so that EST
+        detections matched to excluded-visibility GTs are not counted
+        as false occupied.
+    distance_map: pre-computed distance map (same shape as grids).
+        Avoids recomputing every call when resolution/range are fixed.
     """
     gt = gt_grid.data
     pred = pred_grid.data
+    gt_full = gt_full_grid.data if gt_full_grid is not None else gt
 
     false_free = gt & ~pred
-    false_occupied = ~gt & pred
+    false_occupied = ~gt_full & pred
     true_positive = gt & pred
 
-    dist = gt_grid.distance_map()
+    if distance_map is not None:
+        dist = distance_map
+    else:
+        dist = gt_grid.distance_map()
     in_range = dist <= gt_grid.range_m
 
     eps = 1e-6
@@ -52,9 +65,10 @@ def compute_occupancy_risk(
     safety_weighted = float((w * false_free)[in_range].sum())
     avail_weighted = float((w * false_occupied)[in_range].sum())
 
-    # Normalised rates
     safety_rate = safety_raw / gt_occupied_count if gt_occupied_count > 0 else 0.0
-    avail_rate = avail_raw / int((~gt)[in_range].sum()) if int((~gt)[in_range].sum()) > 0 else 0.0
+    gt_full_occupied = int(gt_full[in_range].sum())
+    free_cells = int((~gt_full)[in_range].sum())
+    avail_rate = avail_raw / free_cells if free_cells > 0 else 0.0
 
     return {
         "safety_risk_cells": safety_raw,
@@ -71,7 +85,8 @@ def compute_occupancy_risk(
 
 
 def _filter_objects(
-    df: pd.DataFrame, cfg: OccupancyConfig, source: str
+    df: pd.DataFrame, cfg: OccupancyConfig, source: str,
+    *, skip_visibility_filter: bool = False,
 ) -> pd.DataFrame:
     """Filter DataFrame to objects within evaluation scope."""
     mask = (
@@ -82,7 +97,7 @@ def _filter_objects(
     dist = np.sqrt(df[cfg.col_x] ** 2 + df[cfg.col_y] ** 2)
     mask = mask & (dist <= cfg.range_m)
 
-    if source == "GT":
+    if source == "GT" and not skip_visibility_filter:
         mask = mask & (~df["visibility"].isin(cfg.visibility_exclude))
         mask = mask & (df["visibility"].notna())
 
@@ -90,18 +105,23 @@ def _filter_objects(
 
 
 def evaluate_timestamp(
-    ts_df: pd.DataFrame, cfg: OccupancyConfig
+    ts_df: pd.DataFrame, cfg: OccupancyConfig,
+    distance_map: np.ndarray | None = None,
 ) -> Dict:
     """Evaluate a single timestamp: grid + polar metrics."""
     gt_objs = _filter_objects(ts_df, cfg, "GT")
+    gt_all_objs = _filter_objects(ts_df, cfg, "GT", skip_visibility_filter=True)
     est_objs = _filter_objects(ts_df, cfg, "EST")
 
     gt_grid = bboxes_to_grid(gt_objs, cfg)
+    gt_full_grid = bboxes_to_grid(gt_all_objs, cfg)
     pred_grid = bboxes_to_grid(est_objs, cfg)
 
     grid_risk = compute_occupancy_risk(
         gt_grid, pred_grid,
         distance_weight_type=cfg.distance_weight_type,
+        gt_full_grid=gt_full_grid,
+        distance_map=distance_map,
     )
 
     gt_polar = bboxes_to_polar(gt_objs, cfg)
@@ -126,7 +146,8 @@ def evaluate_timestamp(
 
 
 def _per_class_grid_risk(
-    ts_df: pd.DataFrame, cfg: OccupancyConfig
+    ts_df: pd.DataFrame, cfg: OccupancyConfig,
+    distance_map: np.ndarray | None = None,
 ) -> Dict[str, Dict]:
     """Compute grid risk broken down by class."""
     results = {}
@@ -136,14 +157,18 @@ def _per_class_grid_risk(
             continue
 
         gt_objs = _filter_objects(cls_df, cfg, "GT")
+        gt_all_objs = _filter_objects(cls_df, cfg, "GT", skip_visibility_filter=True)
         est_objs = _filter_objects(cls_df, cfg, "EST")
 
         gt_grid = bboxes_to_grid(gt_objs, cfg)
+        gt_full_grid = bboxes_to_grid(gt_all_objs, cfg)
         pred_grid = bboxes_to_grid(est_objs, cfg)
 
         risk = compute_occupancy_risk(
             gt_grid, pred_grid,
             distance_weight_type=cfg.distance_weight_type,
+            gt_full_grid=gt_full_grid,
+            distance_map=distance_map,
         )
         results[cls] = risk
     return results
@@ -156,6 +181,9 @@ def run_all(df: pd.DataFrame, cfg: OccupancyConfig) -> Dict:
     """
     timestamps = sorted(df["unix_time"].unique())
     n = len(timestamps)
+
+    ref_grid = OccupancyGrid(cfg.resolution_m, cfg.range_m)
+    cached_distance_map = ref_grid.distance_map()
 
     # Accumulators
     grid_totals = {
@@ -187,7 +215,7 @@ def run_all(df: pd.DataFrame, cfg: OccupancyConfig) -> Dict:
             print(f"  evaluating {i}/{n} timestamps ...", end="\r", flush=True)
 
         ts_df = df[df["unix_time"] == ts]
-        result = evaluate_timestamp(ts_df, cfg)
+        result = evaluate_timestamp(ts_df, cfg, distance_map=cached_distance_map)
 
         g = result["grid"]
         for k in grid_totals:
@@ -207,7 +235,7 @@ def run_all(df: pd.DataFrame, cfg: OccupancyConfig) -> Dict:
         total_gt_objects += result["n_gt_objects"]
         total_est_objects += result["n_est_objects"]
 
-        cls_risks = _per_class_grid_risk(ts_df, cfg)
+        cls_risks = _per_class_grid_risk(ts_df, cfg, distance_map=cached_distance_map)
         for cls, risk in cls_risks.items():
             if cls not in per_class_totals:
                 per_class_totals[cls] = {k: 0 for k in grid_totals}

@@ -99,12 +99,7 @@ def compute_polar_interval_risk(
         gt_merged = gt_polar.merged_intervals(i)
         pred_merged = pred_polar.merged_intervals(i)
 
-        gt_set = _intervals_to_set(gt_merged)
-        pred_set = _intervals_to_set(pred_merged)
-
-        # false_free: GT occupied but pred free
         false_free = _interval_diff_length(gt_merged, pred_merged)
-        # false_occupied: pred occupied but GT free
         false_occupied = _interval_diff_length(pred_merged, gt_merged)
 
         total_false_free += false_free
@@ -114,11 +109,6 @@ def compute_polar_interval_risk(
         "interval_false_free_m": round(total_false_free, 4),
         "interval_false_occupied_m": round(total_false_occupied, 4),
     }
-
-
-def _intervals_to_set(intervals):
-    """Convert intervals to a sorted list for set operations."""
-    return intervals
 
 
 def _interval_diff_length(

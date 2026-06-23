@@ -211,6 +211,120 @@ class TestConverters:
         assert dists.min() < 10.0
 
 
+class TestVisibilityOrphan:
+    """Verify that EST TPs paired with visibility-excluded GTs
+    are not incorrectly counted as availability risk."""
+
+    def test_excluded_gt_tp_not_counted_as_false_occupied(self):
+        rows = [
+            {"unix_time": 1000, "source": "GT", "status": "TP", "label": "car",
+             "x": 10.0, "y": 0.0, "confidence": np.nan, "visibility": "NONE"},
+            {"unix_time": 1000, "source": "EST", "status": "TP", "label": "car",
+             "x": 10.0, "y": 0.0, "confidence": 0.9, "visibility": np.nan},
+        ]
+        df = pd.DataFrame(rows)
+        cfg = OccupancyConfig(
+            csv_path="", output_dir="",
+            resolution_m=0.5, range_m=20.0, classes=["car"],
+            default_bbox_sizes={},
+        )
+        result = evaluate_timestamp(df, cfg)
+        assert result["grid"]["availability_risk_cells"] == 0
+        assert result["grid"]["safety_risk_cells"] == 0
+
+    def test_visible_gt_fn_still_counted_as_safety_risk(self):
+        rows = [
+            {"unix_time": 1000, "source": "GT", "status": "FN", "label": "car",
+             "x": 10.0, "y": 0.0, "confidence": np.nan, "visibility": "FULL"},
+        ]
+        df = pd.DataFrame(rows)
+        cfg = OccupancyConfig(
+            csv_path="", output_dir="",
+            resolution_m=0.5, range_m=20.0, classes=["car"],
+            default_bbox_sizes={},
+        )
+        result = evaluate_timestamp(df, cfg)
+        assert result["grid"]["safety_risk_cells"] > 0
+        assert result["grid"]["availability_risk_cells"] == 0
+
+    def test_mixed_visibility_correct_risk(self):
+        rows = [
+            {"unix_time": 1000, "source": "GT", "status": "TP", "label": "car",
+             "x": 10.0, "y": 0.0, "confidence": np.nan, "visibility": "NONE"},
+            {"unix_time": 1000, "source": "GT", "status": "FN", "label": "car",
+             "x": 20.0, "y": 0.0, "confidence": np.nan, "visibility": "FULL"},
+            {"unix_time": 1000, "source": "EST", "status": "TP", "label": "car",
+             "x": 10.0, "y": 0.0, "confidence": 0.9, "visibility": np.nan},
+        ]
+        df = pd.DataFrame(rows)
+        cfg = OccupancyConfig(
+            csv_path="", output_dir="",
+            resolution_m=0.5, range_m=30.0, classes=["car"],
+            default_bbox_sizes={},
+        )
+        result = evaluate_timestamp(df, cfg)
+        assert result["grid"]["safety_risk_cells"] > 0
+        assert result["grid"]["availability_risk_cells"] == 0
+
+
+class TestLabelBasedSizes:
+    """Verify label-based default bbox sizes are used when w/l/yaw missing."""
+
+    def test_car_larger_than_pedestrian(self):
+        cfg = OccupancyConfig(
+            csv_path="", output_dir="",
+            resolution_m=0.5, range_m=20.0,
+        )
+        car = pd.DataFrame([{"x": 10.0, "y": 0.0, "label": "car"}])
+        ped = pd.DataFrame([{"x": 10.0, "y": 0.0, "label": "pedestrian"}])
+
+        car_grid = bboxes_to_grid(car, cfg)
+        ped_grid = bboxes_to_grid(ped, cfg)
+
+        assert car_grid.data.sum() > ped_grid.data.sum() * 5
+
+    def test_explicit_bbox_overrides_default(self):
+        cfg = OccupancyConfig(
+            csv_path="", output_dir="",
+            resolution_m=0.5, range_m=20.0,
+        )
+        obj_with_bbox = pd.DataFrame([{
+            "x": 10.0, "y": 0.0, "label": "car",
+            "w": 1.0, "l": 1.0, "yaw": 0.0,
+        }])
+        obj_no_bbox = pd.DataFrame([{"x": 10.0, "y": 0.0, "label": "car"}])
+
+        grid_explicit = bboxes_to_grid(obj_with_bbox, cfg)
+        grid_default = bboxes_to_grid(obj_no_bbox, cfg)
+
+        assert grid_explicit.data.sum() < grid_default.data.sum()
+
+    def test_unknown_label_falls_back_to_circle(self):
+        cfg = OccupancyConfig(
+            csv_path="", output_dir="",
+            resolution_m=0.5, range_m=20.0,
+        )
+        obj = pd.DataFrame([{"x": 10.0, "y": 0.0, "label": "unknown_thing"}])
+        grid = bboxes_to_grid(obj, cfg)
+        assert grid.data.sum() > 0
+
+
+class TestDistanceMapCache:
+    """Verify that pre-computed distance_map produces identical results."""
+
+    def test_cached_matches_computed(self):
+        from occupancy_metrics.grid import OccupancyGrid
+        gt = OccupancyGrid(resolution=0.5, range_m=10.0)
+        pred = OccupancyGrid(resolution=0.5, range_m=10.0)
+        gt.fill_circle(5.0, 0.0, 1.0)
+
+        result_no_cache = compute_occupancy_risk(gt, pred)
+        cached_dm = gt.distance_map()
+        result_cached = compute_occupancy_risk(gt, pred, distance_map=cached_dm)
+
+        assert result_no_cache == result_cached
+
+
 class TestEndToEnd:
     def _make_csv_data(self):
         rows = []

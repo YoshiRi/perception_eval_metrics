@@ -14,6 +14,27 @@ def _has_bbox_columns(df: pd.DataFrame, cfg: OccupancyConfig) -> bool:
     return all(c in df.columns for c in (cfg.col_w, cfg.col_l, cfg.col_yaw))
 
 
+def _get_object_dims(
+    row, cfg: OccupancyConfig, use_bbox: bool,
+) -> tuple[float, float, float] | None:
+    """Return (w, l, yaw) for an object, or None to fall back to circle."""
+    if use_bbox:
+        w = float(row[cfg.col_w])
+        l = float(row[cfg.col_l])
+        yaw = float(row[cfg.col_yaw])
+        if not (np.isnan(w) or np.isnan(l) or np.isnan(yaw)):
+            return w, l, yaw
+
+    label = str(row.get("label", ""))
+    if label in cfg.default_bbox_sizes:
+        dims = cfg.default_bbox_sizes[label]
+        l_def, w_def = float(dims[0]), float(dims[1])
+        yaw = float(row[cfg.col_yaw]) if use_bbox and cfg.col_yaw in row.index and not np.isnan(row[cfg.col_yaw]) else 0.0
+        return w_def, l_def, yaw
+
+    return None
+
+
 def bboxes_to_grid(
     objects: pd.DataFrame, cfg: OccupancyConfig
 ) -> OccupancyGrid:
@@ -31,14 +52,10 @@ def bboxes_to_grid(
         if abs(cx) > cfg.range_m or abs(cy) > cfg.range_m:
             continue
 
-        if use_bbox:
-            w = float(row[cfg.col_w])
-            l = float(row[cfg.col_l])
-            yaw = float(row[cfg.col_yaw])
-            if np.isnan(w) or np.isnan(l) or np.isnan(yaw):
-                grid.fill_circle(cx, cy, cfg.point_radius_m)
-            else:
-                grid.fill_rotated_box(cx, cy, w, l, yaw)
+        dims = _get_object_dims(row, cfg, use_bbox)
+        if dims is not None:
+            w, l, yaw = dims
+            grid.fill_rotated_box(cx, cy, w, l, yaw)
         else:
             grid.fill_circle(cx, cy, cfg.point_radius_m)
 
@@ -63,10 +80,9 @@ def bboxes_to_polar(
         if dist > cfg.polar_max_range_m:
             continue
 
-        if use_bbox and not np.isnan(row.get(cfg.col_w, np.nan)):
-            w = float(row[cfg.col_w])
-            l = float(row[cfg.col_l])
-            yaw = float(row[cfg.col_yaw])
+        dims = _get_object_dims(row, cfg, use_bbox)
+        if dims is not None:
+            w, l, yaw = dims
             _add_bbox_to_polar(polar, cx, cy, w, l, yaw)
         else:
             _add_point_to_polar(polar, cx, cy, cfg.point_radius_m)
