@@ -1,0 +1,31 @@
+csv_path: path/to/current.csv
+output_dir: output/occupancy/default
+
+label: occupancy_default
+
+# Grid settings
+resolution_m: 0.5
+range_m: 80.0
+
+# Evaluation scope
+classes:
+  - car
+  - truck
+  - bus
+  - pedestrian
+visibility_exclude:
+  - NONE
+
+# Distance weighting: "inverse_square" (1/r²) or "uniform"
+distance_weight_type: inverse_square
+
+# Polar / Stixel settings
+n_rays: 360
+polar_max_range_m: 80.0
+
+# CSV column mapping — all five columns are required
+col_x: x
+col_y: y
+col_w: w
+col_l: l
+col_yaw: yaw
