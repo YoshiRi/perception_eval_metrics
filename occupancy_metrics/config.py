@@ -43,18 +43,9 @@ class OccupancyConfig:
     col_l: str = "l"
     col_yaw: str = "yaw"
 
-    # ── Fallback sizes when bbox columns are missing ────────────────────────
-    # label → (length_m, width_m); used to rasterise oriented boxes
-    # instead of uniform circles when w/l/yaw columns are absent.
-    default_bbox_sizes: Dict[str, List[float]] = field(default_factory=lambda: {
-        "car": [4.5, 1.8],
-        "truck": [10.0, 2.5],
-        "bus": [12.0, 2.5],
-        "pedestrian": [0.5, 0.5],
-        "motorbike": [2.0, 0.8],
-        "bicycle": [1.8, 0.6],
-    })
-    point_radius_m: float = 1.0
+    # ── Required bbox columns ────────────────────────────────────────────────
+    # The CSV must contain w, l, yaw columns (or the names set above).
+    # If they are missing, bboxes_to_grid / bboxes_to_polar will raise.
 
     # ── Serialisation ─────────────────────────────────────────────────────
 
