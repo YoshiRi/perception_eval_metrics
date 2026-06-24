@@ -288,6 +288,79 @@ class TestVisibilityOrphan:
         assert result["grid"]["availability_risk_cells"] == 0
 
 
+class TestROI:
+    """Verify ROI-based regional evaluation."""
+
+    def test_roi_mask_shape(self):
+        from occupancy_metrics.grid import OccupancyGrid
+        grid = OccupancyGrid(resolution=0.5, range_m=10.0)
+        mask = grid.roi_mask(0, 10, -5, 5)
+        assert mask.shape == grid.shape
+        assert mask.any()
+
+    def test_roi_restricts_evaluation(self):
+        from occupancy_metrics.grid import OccupancyGrid
+        gt = OccupancyGrid(resolution=0.5, range_m=20.0)
+        pred = OccupancyGrid(resolution=0.5, range_m=20.0)
+        # Object at (10, 0) — inside ROI x>0
+        gt.fill_rotated_box(10.0, 0.0, 2.0, 4.0, 0.0)
+        # Object at (-10, 0) — outside ROI x>0
+        gt.fill_rotated_box(-10.0, 0.0, 2.0, 4.0, 0.0)
+
+        full = compute_occupancy_risk(gt, pred)
+        roi = gt.roi_mask(0, 20, -20, 20)
+        restricted = compute_occupancy_risk(gt, pred, roi_mask=roi)
+
+        assert restricted["safety_risk_cells"] < full["safety_risk_cells"]
+        assert restricted["safety_risk_cells"] > 0
+
+    def test_roi_in_evaluate_timestamp(self):
+        from occupancy_metrics.config import ROI
+        rows = [
+            {"unix_time": 1000, "source": "GT", "status": "FN", "label": "car",
+             "x": 15.0, "y": 0.0, "w": 4.0, "l": 2.0, "yaw": 0.0,
+             "confidence": np.nan, "visibility": "FULL"},
+            {"unix_time": 1000, "source": "GT", "status": "FN", "label": "car",
+             "x": -15.0, "y": 0.0, "w": 4.0, "l": 2.0, "yaw": 0.0,
+             "confidence": np.nan, "visibility": "FULL"},
+        ]
+        df = pd.DataFrame(rows)
+        cfg = OccupancyConfig(
+            csv_path="", output_dir="",
+            resolution_m=0.5, range_m=30.0, classes=["car"],
+            rois=[ROI(name="front", x_min=0, x_max=30, y_min=-30, y_max=30)],
+        )
+        from occupancy_metrics.grid import OccupancyGrid
+        ref = OccupancyGrid(cfg.resolution_m, cfg.range_m)
+        roi_masks = {r.name: ref.roi_mask(r.x_min, r.x_max, r.y_min, r.y_max) for r in cfg.rois}
+        result = evaluate_timestamp(df, cfg, roi_masks=roi_masks)
+
+        assert "rois" in result
+        front = result["rois"]["front"]
+        full = result["grid"]
+        assert front["safety_risk_cells"] < full["safety_risk_cells"]
+        assert front["safety_risk_cells"] > 0
+
+    def test_run_all_with_rois(self):
+        from occupancy_metrics.config import ROI
+        rows = []
+        for i in range(3):
+            rows.append({"unix_time": 1000, "source": "GT", "status": "FN", "label": "car",
+                         "x": 10.0 + i * 5, "y": 0.0, "w": 4.0, "l": 2.0, "yaw": 0.0,
+                         "confidence": np.nan, "visibility": "FULL"})
+        df = pd.DataFrame(rows)
+        cfg = OccupancyConfig(
+            csv_path="", output_dir="",
+            resolution_m=0.5, range_m=40.0, classes=["car"],
+            rois=[ROI(name="near_front", x_min=0, x_max=15, y_min=-5, y_max=5)],
+        )
+        result = run_all(df, cfg)
+        assert "rois" in result
+        near = result["rois"]["near_front"]
+        assert near["safety_risk_cells"] > 0
+        assert near["safety_risk_cells"] < result["grid"]["safety_risk_cells"]
+
+
 class TestDistanceMapCache:
     """Verify that pre-computed distance_map produces identical results."""
 

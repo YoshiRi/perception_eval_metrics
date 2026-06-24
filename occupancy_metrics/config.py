@@ -10,6 +10,20 @@ import yaml
 
 
 @dataclass
+class ROI:
+    """Named rectangular region of interest in world coordinates."""
+    name: str
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+
+    @classmethod
+    def from_dict(cls, d: Dict) -> "ROI":
+        return cls(**d)
+
+
+@dataclass
 class OccupancyConfig:
     # ── Required ──────────────────────────────────────────────────────────
     csv_path: str
@@ -43,9 +57,9 @@ class OccupancyConfig:
     col_l: str = "l"
     col_yaw: str = "yaw"
 
-    # ── Required bbox columns ────────────────────────────────────────────────
-    # The CSV must contain w, l, yaw columns (or the names set above).
-    # If they are missing, bboxes_to_grid / bboxes_to_polar will raise.
+    # ── Regions of interest ─────────────────────────────────────────────────
+    # After full-grid evaluation, metrics are also computed per ROI.
+    rois: List[ROI] = field(default_factory=list)
 
     # ── Serialisation ─────────────────────────────────────────────────────
 
@@ -57,11 +71,16 @@ class OccupancyConfig:
     def from_yaml(cls, path: str | Path) -> "OccupancyConfig":
         with open(path) as f:
             data = yaml.safe_load(f)
-        return cls(**data)
+        raw_rois = data.pop("rois", [])
+        cfg = cls(**data)
+        cfg.rois = [ROI.from_dict(r) for r in raw_rois]
+        return cfg
 
     def to_yaml(self, path: str | Path) -> None:
+        d = asdict(self)
+        d["rois"] = [asdict(r) for r in self.rois]
         with open(path, "w") as f:
-            yaml.dump(asdict(self), f, allow_unicode=True, sort_keys=False)
+            yaml.dump(d, f, allow_unicode=True, sort_keys=False)
 
     # ── CLI override ──────────────────────────────────────────────────────
 
