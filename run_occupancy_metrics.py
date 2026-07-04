@@ -83,6 +83,24 @@ def print_results(results: dict, cfg: OccupancyConfig) -> None:
     print(f"  False free (missed occupancy):      {iv['false_free_m']:.2f} m (total across rays)")
     print(f"  False occupied (hallucinated):      {iv['false_occupied_m']:.2f} m (total across rays)")
 
+    rc = results["ray_collision"]
+    print(_sep("5  Ray-based Min-Collision-Distance TP/FP/FN (forward only)"))
+    print(f"  forward window: ±{cfg.ray_collision_forward_angle_deg / 2:.0f}°   dist threshold: {cfg.ray_collision_dist_threshold_m} m")
+    print(f"  {'class':>12s}  {'TP':>8s}  {'FP':>8s}  {'FN':>8s}  {'precision':>10s}  {'recall':>10s}")
+    print(f"  {'-'*12}  {'-'*8}  {'-'*8}  {'-'*8}  {'-'*10}  {'-'*10}")
+    for cls in cfg.classes:
+        c = rc.get(cls, {"TP": 0, "FP": 0, "FN": 0, "precision": 0.0, "recall": 0.0})
+        print(
+            f"  {cls:>12s}  {c['TP']:>8,}  {c['FP']:>8,}  {c['FN']:>8,}"
+            f"  {c['precision']:>10.4f}  {c['recall']:>10.4f}"
+        )
+    unk = rc.get("__unknown__", {"TP": 0, "FP": 0, "FN": 0, "precision": 0.0, "recall": 0.0})
+    if unk["TP"] or unk["FP"] or unk["FN"]:
+        print(
+            f"  {'(unknown)':>12s}  {unk['TP']:>8,}  {unk['FP']:>8,}  {unk['FN']:>8,}"
+            f"  {unk['precision']:>10.4f}  {unk['recall']:>10.4f}"
+        )
+
     print(_sep())
 
 
@@ -100,6 +118,8 @@ def save_results(results: dict, cfg: OccupancyConfig) -> Path:
             "visibility_exclude": cfg.visibility_exclude,
             "distance_weight_type": cfg.distance_weight_type,
             "n_rays": cfg.n_rays,
+            "ray_collision_dist_threshold_m": cfg.ray_collision_dist_threshold_m,
+            "ray_collision_forward_angle_deg": cfg.ray_collision_forward_angle_deg,
         },
         "n_timestamps": results["n_timestamps"],
         "n_gt_objects_total": results["n_gt_objects_total"],
@@ -108,6 +128,7 @@ def save_results(results: dict, cfg: OccupancyConfig) -> Path:
         "polar": results["polar"],
         "polar_interval": results["polar_interval"],
         "per_class": results["per_class"],
+        "ray_collision": results["ray_collision"],
     }
     with open(out / "summary.json", "w") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)

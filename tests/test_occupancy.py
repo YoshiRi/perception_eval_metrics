@@ -9,6 +9,13 @@ from occupancy_metrics.polar import PolarOccupancy, compute_polar_risk, compute_
 from occupancy_metrics.config import OccupancyConfig
 from occupancy_metrics.converters import bboxes_to_grid, bboxes_to_polar
 from occupancy_metrics.compute import compute_occupancy_risk, evaluate_timestamp, run_all
+from occupancy_metrics.ray_collision import (
+    compute_ray_collision_records,
+    count_by_class,
+    finalise_counts,
+    forward_ray_mask,
+    merge_counts,
+)
 
 
 class TestOccupancyGrid:
@@ -127,6 +134,16 @@ class TestPolarOccupancy:
         polar.add_interval(0, 10.0, 15.0)
         merged = polar.merged_intervals(0)
         assert len(merged) == 2
+
+    def test_nearest_label_empty(self):
+        polar = PolarOccupancy(n_rays=360, max_range=80.0)
+        assert polar.nearest_label(0) is None
+
+    def test_nearest_label_picks_closest(self):
+        polar = PolarOccupancy(n_rays=360, max_range=80.0)
+        polar.add_interval(0, 5.0, 10.0, label="truck")
+        polar.add_interval(0, 3.0, 6.0, label="car")
+        assert polar.nearest_label(0) == "car"
 
 
 class TestPolarRisk:
@@ -446,3 +463,102 @@ class TestEndToEnd:
         assert result["n_timestamps"] == 1
         assert result["grid"]["safety_risk_cells"] > 0
         assert "car" in result["per_class"]
+        assert "car" in result["ray_collision"]
+
+
+class TestForwardRayMask:
+    def test_all_forward_selected(self):
+        mask = forward_ray_mask(n_rays=360, forward_angle_deg=360.0)
+        assert mask.all()
+
+    def test_narrow_window_excludes_rear(self):
+        mask = forward_ray_mask(n_rays=360, forward_angle_deg=120.0)
+        # ray 0 is centred near angle 0 (forward) -> included
+        assert mask[0]
+        # ray 180 is centred near angle pi (directly behind) -> excluded
+        assert not mask[180]
+
+    def test_window_is_symmetric_around_forward(self):
+        mask = forward_ray_mask(n_rays=360, forward_angle_deg=120.0)
+        assert int(mask.sum()) == 120
+
+
+class TestRayCollisionRecords:
+    def test_perfect_match_is_tp(self):
+        gt = PolarOccupancy(n_rays=4, max_range=80.0)
+        pred = PolarOccupancy(n_rays=4, max_range=80.0)
+        gt.add_interval(0, 5.0, 10.0, label="car")
+        pred.add_interval(0, 5.0, 10.0, label="car")
+
+        records = compute_ray_collision_records(gt, pred, dist_threshold_m=1.0, forward_angle_deg=360.0)
+        assert len(records) == 1
+        assert records[0]["status"] == "TP"
+        assert records[0]["label"] == "car"
+
+    def test_gt_only_is_fn(self):
+        gt = PolarOccupancy(n_rays=4, max_range=80.0)
+        pred = PolarOccupancy(n_rays=4, max_range=80.0)
+        gt.add_interval(0, 5.0, 10.0, label="pedestrian")
+
+        records = compute_ray_collision_records(gt, pred, dist_threshold_m=1.0, forward_angle_deg=360.0)
+        assert len(records) == 1
+        assert records[0]["status"] == "FN"
+        assert records[0]["label"] == "pedestrian"
+
+    def test_pred_only_is_fp(self):
+        gt = PolarOccupancy(n_rays=4, max_range=80.0)
+        pred = PolarOccupancy(n_rays=4, max_range=80.0)
+        pred.add_interval(0, 5.0, 10.0, label="truck")
+
+        records = compute_ray_collision_records(gt, pred, dist_threshold_m=1.0, forward_angle_deg=360.0)
+        assert len(records) == 1
+        assert records[0]["status"] == "FP"
+        assert records[0]["label"] == "truck"
+
+    def test_both_empty_is_excluded(self):
+        gt = PolarOccupancy(n_rays=4, max_range=80.0)
+        pred = PolarOccupancy(n_rays=4, max_range=80.0)
+
+        records = compute_ray_collision_records(gt, pred, dist_threshold_m=1.0, forward_angle_deg=360.0)
+        assert records == []
+
+    def test_distance_beyond_threshold_yields_fn_and_fp(self):
+        gt = PolarOccupancy(n_rays=4, max_range=80.0)
+        pred = PolarOccupancy(n_rays=4, max_range=80.0)
+        gt.add_interval(0, 5.0, 6.0, label="car")
+        pred.add_interval(0, 15.0, 16.0, label="car")
+
+        records = compute_ray_collision_records(gt, pred, dist_threshold_m=1.0, forward_angle_deg=360.0)
+        statuses = sorted(r["status"] for r in records)
+        assert statuses == ["FN", "FP"]
+
+    def test_forward_only_excludes_rear_ray(self):
+        gt = PolarOccupancy(n_rays=4, max_range=80.0)
+        pred = PolarOccupancy(n_rays=4, max_range=80.0)
+        # ray 2 of 4 is centred near angle pi (directly behind ego)
+        gt.add_interval(2, 5.0, 10.0, label="car")
+
+        records = compute_ray_collision_records(gt, pred, dist_threshold_m=1.0, forward_angle_deg=120.0)
+        assert records == []
+
+
+class TestRayCollisionAggregation:
+    def test_count_by_class_buckets_unknown_label(self):
+        records = [
+            {"ray": 0, "status": "TP", "label": "car", "dist_error_m": 0.1},
+            {"ray": 1, "status": "FP", "label": "bicycle", "dist_error_m": None},
+        ]
+        counts = count_by_class(records, classes=["car", "pedestrian"])
+        assert counts["car"]["TP"] == 1
+        assert counts["__unknown__"]["FP"] == 1
+
+    def test_merge_and_finalise(self):
+        totals = {"car": {"TP": 0, "FP": 0, "FN": 0}}
+        merge_counts(totals, {"car": {"TP": 2, "FP": 1, "FN": 1}})
+        merge_counts(totals, {"car": {"TP": 1, "FP": 0, "FN": 0}})
+        final = finalise_counts(totals)
+        assert final["car"]["TP"] == 3
+        assert final["car"]["FP"] == 1
+        assert final["car"]["FN"] == 1
+        assert final["car"]["precision"] == pytest.approx(3 / 4)
+        assert final["car"]["recall"] == pytest.approx(3 / 4)

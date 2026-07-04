@@ -11,6 +11,13 @@ from .config import OccupancyConfig
 from .grid import OccupancyGrid, EgoState
 from .converters import bboxes_to_grid, bboxes_to_polar
 from .polar import compute_polar_risk, compute_polar_interval_risk
+from .ray_collision import (
+    compute_ray_collision_records,
+    count_by_class,
+    empty_counts,
+    finalise_counts,
+    merge_counts,
+)
 
 
 def compute_occupancy_risk(
@@ -137,6 +144,13 @@ def evaluate_timestamp(
     polar_risk = compute_polar_risk(gt_polar, pred_polar)
     interval_risk = compute_polar_interval_risk(gt_polar, pred_polar)
 
+    ray_records = compute_ray_collision_records(
+        gt_polar, pred_polar,
+        dist_threshold_m=cfg.ray_collision_dist_threshold_m,
+        forward_angle_deg=cfg.ray_collision_forward_angle_deg,
+    )
+    ray_collision_counts = count_by_class(ray_records, cfg.classes)
+
     result = {
         "grid": grid_risk,
         "polar": {
@@ -147,6 +161,7 @@ def evaluate_timestamp(
             "n_valid_rays": polar_risk["n_valid_rays"],
         },
         "polar_interval": interval_risk,
+        "ray_collision_counts": ray_collision_counts,
         "n_gt_objects": len(gt_objs),
         "n_est_objects": len(est_objs),
     }
@@ -243,6 +258,9 @@ def run_all(df: pd.DataFrame, cfg: OccupancyConfig) -> Dict:
         "false_occupied_m": 0.0,
     }
     per_class_totals: Dict[str, Dict] = {}
+    ray_collision_totals: Dict[str, Dict] = {
+        cls: empty_counts() for cls in cfg.classes
+    }
     total_gt_objects = 0
     total_est_objects = 0
 
@@ -275,6 +293,8 @@ def run_all(df: pd.DataFrame, cfg: OccupancyConfig) -> Dict:
         iv = result["polar_interval"]
         interval_totals["false_free_m"] += iv["interval_false_free_m"]
         interval_totals["false_occupied_m"] += iv["interval_false_occupied_m"]
+
+        merge_counts(ray_collision_totals, result["ray_collision_counts"])
 
         total_gt_objects += result["n_gt_objects"]
         total_est_objects += result["n_est_objects"]
@@ -324,6 +344,7 @@ def run_all(df: pd.DataFrame, cfg: OccupancyConfig) -> Dict:
             "false_occupied_m": round(interval_totals["false_occupied_m"], 4),
         },
         "per_class": per_class_summary,
+        "ray_collision": finalise_counts(ray_collision_totals),
     }
     if roi_totals:
         out["rois"] = {name: _summarise_grid_totals(t) for name, t in roi_totals.items()}

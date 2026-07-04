@@ -50,6 +50,10 @@ class OccupancyConfig:
     n_rays: int = 360
     polar_max_range_m: float = 80.0
 
+    # ── Ray-based min-collision-distance TP/FP/FN (forward-only) ──────────
+    ray_collision_dist_threshold_m: float = 2.0
+    ray_collision_forward_angle_deg: float = 120.0
+
     # ── CSV column mapping ────────────────────────────────────────────────
     col_x: str = "x"
     col_y: str = "y"
@@ -110,6 +114,14 @@ class OccupancyConfig:
             "--vis-exclude",
             help="Comma-separated visibility values to exclude",
         )
+        parser.add_argument(
+            "--ray-collision-threshold", dest="ray_collision_dist_threshold_m", type=float,
+            help="Ray min-collision-distance TP threshold in metres (default: 2.0)",
+        )
+        parser.add_argument(
+            "--ray-collision-forward-angle", dest="ray_collision_forward_angle_deg", type=float,
+            help="Forward angular window in degrees for ray-collision eval (default: 120.0)",
+        )
 
     @classmethod
     def from_args(cls, args) -> "OccupancyConfig":
@@ -140,4 +152,8 @@ class OccupancyConfig:
             cfg.visibility_exclude = [
                 v.strip() for v in args.vis_exclude.split(",")
             ]
+        if args.ray_collision_dist_threshold_m is not None:
+            cfg.ray_collision_dist_threshold_m = args.ray_collision_dist_threshold_m
+        if args.ray_collision_forward_angle_deg is not None:
+            cfg.ray_collision_forward_angle_deg = args.ray_collision_forward_angle_deg
         return cfg
