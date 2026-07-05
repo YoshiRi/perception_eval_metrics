@@ -1,91 +1,137 @@
-"""Forward-facing, Ray-based minimum-collision-distance TP/FP/FN evaluation.
+"""Forward-corridor, Ray-based minimum-collision-distance TP/FP/FN evaluation.
 
-For each ray theta (restricted to a forward angular window around the ego's
-+x axis), the nearest occupied distance is compared between GT and Pred:
+Rather than a fixed *angular* forward window (which widens without bound at
+long range — +/-60 deg covers +/-69m laterally at 40m out), the forward zone
+here is a constant-width *corridor*: a ray's occupier is in-scope only if its
+lateral offset from the ego's centerline (r * sin(theta)) is within a
+per-class half-width, and it is ahead of the ego (r * cos(theta) > 0). This
+keeps the evaluated zone lane-shaped at every range.
 
-  - both empty                                   -> excluded (nothing to evaluate)
-  - GT occupied, Pred empty or |r_gt-r_pred| > thr -> FN
-  - Pred occupied, GT empty or |r_gt-r_pred| > thr  -> FP
-  - both occupied and |r_gt-r_pred| <= thr          -> TP
+For each ray theta, the nearest occupied distance is compared between GT and
+Pred, each tested against the corridor sized for *its own* class:
 
-When both sides are occupied but the distance differs by more than the
+  - both out of corridor / empty                  -> excluded
+  - GT in corridor, Pred not (or empty, or |diff| > thr) -> FN
+  - Pred in corridor, GT not (or empty, or |diff| > thr)  -> FP
+  - both in corridor and |r_gt - r_pred| <= thr           -> TP
+
+When both sides are in-corridor but the distance differs by more than the
 threshold, the ray contributes one FN (GT's obstacle missed at its true
-distance) *and* one FP (Pred's obstacle at the wrong distance) — mirroring
-how an unmatched GT/EST pair is counted in object-level matching.
+distance) *and* one FP (Pred's obstacle at the wrong distance).
 
 Each ray's status is labelled with the class of its nearest occupier (GT's
-class for TP/FN, Pred's class for FP), which is how per-class breakdowns are
-derived from a single combined (multi-class) ray sweep.
+class for TP/FN, Pred's class for FP). A second, narrower and shorter-range
+corridor ("critical") marks FN/FP records that fall directly in front of the
+ego at close range — these are operationally unacceptable regardless of
+class and are surfaced separately from the per-class precision/recall.
 """
 
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Optional
-
-import numpy as np
 
 from .polar import PolarOccupancy
 
 UNKNOWN_LABEL = "__unknown__"
 
 
-def forward_ray_mask(n_rays: int, forward_angle_deg: float) -> np.ndarray:
-    """Boolean mask selecting rays within +/-forward_angle_deg/2 of the ego's +x axis."""
-    half = np.deg2rad(forward_angle_deg) / 2.0
-    ray_angles = (np.arange(n_rays) + 0.5) / n_rays * 2 * np.pi
-    ray_angles = np.where(ray_angles > np.pi, ray_angles - 2 * np.pi, ray_angles)
-    return np.abs(ray_angles) <= half
+def _ray_center_angle(ray_idx: int, n_rays: int) -> float:
+    """Angle (radians, wrapped to (-pi, pi]) at the center of a ray bucket."""
+    angle = (ray_idx + 0.5) / n_rays * 2 * math.pi
+    if angle > math.pi:
+        angle -= 2 * math.pi
+    return angle
+
+
+def _corridor_half_width(
+    label: Optional[str], widths: Dict[str, float], default_half_width_m: float
+) -> float:
+    if label is None:
+        return default_half_width_m
+    return widths.get(label, default_half_width_m)
+
+
+def _in_corridor(distance: float, angle: float, half_width_m: float, max_range: float) -> bool:
+    if distance >= max_range:
+        return False
+    longitudinal = distance * math.cos(angle)
+    if longitudinal <= 0.0:
+        return False
+    lateral = distance * math.sin(angle)
+    return abs(lateral) <= half_width_m
 
 
 def compute_ray_collision_records(
     gt_polar: PolarOccupancy,
     pred_polar: PolarOccupancy,
     dist_threshold_m: float,
-    forward_angle_deg: float = 120.0,
+    corridor_half_width_m: Dict[str, float],
+    corridor_default_half_width_m: float,
+    critical_half_width_m: float,
+    critical_range_m: float,
 ) -> List[Dict]:
-    """Per forward-ray TP/FP/FN records. See module docstring for the logic."""
-    n_rays = gt_polar.n_rays
-    mask = forward_ray_mask(n_rays, forward_angle_deg)
+    """Per forward-corridor-ray TP/FP/FN records. See module docstring for the logic.
 
+    Each FN/FP record carries a `critical` bool: True if it also falls
+    inside the narrow, near-range corridor (`critical_half_width_m`,
+    `critical_range_m`) where a miss/false-alarm is unconditionally
+    unacceptable. TP records have no `critical` key.
+    """
+    n_rays = gt_polar.n_rays
+    max_range = gt_polar.max_range
     gt_dists = gt_polar.nearest_distances()
     pred_dists = pred_polar.nearest_distances()
 
-    max_r = gt_polar.max_range
-    gt_occ = gt_dists < max_r
-    pred_occ = pred_dists < max_r
-
     records: List[Dict] = []
 
-    for ray_idx in np.nonzero(mask)[0]:
-        g_occ = bool(gt_occ[ray_idx])
-        p_occ = bool(pred_occ[ray_idx])
-        if not g_occ and not p_occ:
+    for ray_idx in range(n_rays):
+        angle = _ray_center_angle(ray_idx, n_rays)
+
+        gt_occ = gt_dists[ray_idx] < max_range
+        pred_occ = pred_dists[ray_idx] < max_range
+        gt_label = gt_polar.nearest_label(ray_idx) if gt_occ else None
+        pred_label = pred_polar.nearest_label(ray_idx) if pred_occ else None
+
+        gt_width = _corridor_half_width(gt_label, corridor_half_width_m, corridor_default_half_width_m)
+        pred_width = _corridor_half_width(pred_label, corridor_half_width_m, corridor_default_half_width_m)
+
+        gt_in = gt_occ and _in_corridor(float(gt_dists[ray_idx]), angle, gt_width, max_range)
+        pred_in = pred_occ and _in_corridor(float(pred_dists[ray_idx]), angle, pred_width, max_range)
+
+        if not gt_in and not pred_in:
             continue
 
-        gt_label = gt_polar.nearest_label(int(ray_idx)) if g_occ else None
-        pred_label = pred_polar.nearest_label(int(ray_idx)) if p_occ else None
+        def _is_critical(distance: float) -> bool:
+            return distance <= critical_range_m and _in_corridor(
+                distance, angle, critical_half_width_m, max_range
+            )
 
-        if g_occ and p_occ:
+        if gt_in and pred_in:
             diff = float(abs(gt_dists[ray_idx] - pred_dists[ray_idx]))
             if diff <= dist_threshold_m:
                 records.append(
-                    {"ray": int(ray_idx), "status": "TP", "label": gt_label, "dist_error_m": diff}
+                    {"ray": ray_idx, "status": "TP", "label": gt_label, "dist_error_m": diff}
                 )
                 continue
-            records.append(
-                {"ray": int(ray_idx), "status": "FN", "label": gt_label, "dist_error_m": diff}
-            )
-            records.append(
-                {"ray": int(ray_idx), "status": "FP", "label": pred_label, "dist_error_m": diff}
-            )
-        elif g_occ:
-            records.append(
-                {"ray": int(ray_idx), "status": "FN", "label": gt_label, "dist_error_m": None}
-            )
+            records.append({
+                "ray": ray_idx, "status": "FN", "label": gt_label,
+                "dist_error_m": diff, "critical": _is_critical(float(gt_dists[ray_idx])),
+            })
+            records.append({
+                "ray": ray_idx, "status": "FP", "label": pred_label,
+                "dist_error_m": diff, "critical": _is_critical(float(pred_dists[ray_idx])),
+            })
+        elif gt_in:
+            records.append({
+                "ray": ray_idx, "status": "FN", "label": gt_label,
+                "dist_error_m": None, "critical": _is_critical(float(gt_dists[ray_idx])),
+            })
         else:
-            records.append(
-                {"ray": int(ray_idx), "status": "FP", "label": pred_label, "dist_error_m": None}
-            )
+            records.append({
+                "ray": ray_idx, "status": "FP", "label": pred_label,
+                "dist_error_m": None, "critical": _is_critical(float(pred_dists[ray_idx])),
+            })
 
     return records
 
@@ -130,3 +176,22 @@ def finalise_counts(totals: Dict[str, Dict]) -> Dict[str, Dict]:
             "recall": round(recall, 6),
         }
     return out
+
+
+def empty_critical_counts() -> Dict:
+    return {"FN": 0, "FP": 0}
+
+
+def count_critical(records: List[Dict]) -> Dict:
+    """Raw critical-zone FN/FP counts for one timestamp's records."""
+    counts = empty_critical_counts()
+    for rec in records:
+        if rec.get("critical"):
+            counts[rec["status"]] += 1
+    return counts
+
+
+def merge_critical_counts(totals: Dict, counts: Dict) -> None:
+    """In-place accumulate raw critical-zone FN/FP counts from `counts` into `totals`."""
+    for k in ("FN", "FP"):
+        totals[k] += counts[k]

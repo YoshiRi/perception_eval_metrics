@@ -12,10 +12,24 @@ from occupancy_metrics.compute import compute_occupancy_risk, evaluate_timestamp
 from occupancy_metrics.ray_collision import (
     compute_ray_collision_records,
     count_by_class,
+    count_critical,
     finalise_counts,
-    forward_ray_mask,
     merge_counts,
 )
+
+_WIDTHS = {"car": 1.75, "truck": 1.75, "bus": 1.75, "pedestrian": 1.0}
+
+
+def _records(gt, pred, dist_threshold_m=1.0, widths=_WIDTHS, default_width=1.75,
+             critical_width=1.0, critical_range=15.0):
+    return compute_ray_collision_records(
+        gt, pred,
+        dist_threshold_m=dist_threshold_m,
+        corridor_half_width_m=widths,
+        corridor_default_half_width_m=default_width,
+        critical_half_width_m=critical_width,
+        critical_range_m=critical_range,
+    )
 
 
 class TestOccupancyGrid:
@@ -466,80 +480,104 @@ class TestEndToEnd:
         assert "car" in result["ray_collision"]
 
 
-class TestForwardRayMask:
-    def test_all_forward_selected(self):
-        mask = forward_ray_mask(n_rays=360, forward_angle_deg=360.0)
-        assert mask.all()
-
-    def test_narrow_window_excludes_rear(self):
-        mask = forward_ray_mask(n_rays=360, forward_angle_deg=120.0)
-        # ray 0 is centred near angle 0 (forward) -> included
-        assert mask[0]
-        # ray 180 is centred near angle pi (directly behind) -> excluded
-        assert not mask[180]
-
-    def test_window_is_symmetric_around_forward(self):
-        mask = forward_ray_mask(n_rays=360, forward_angle_deg=120.0)
-        assert int(mask.sum()) == 120
-
-
 class TestRayCollisionRecords:
+    # n_rays=360 gives ~1 deg/ray: ray 0 is ~0.5 deg off dead-ahead, ray 180
+    # is ~0.5 deg off directly behind, and ray 7 sits ~7.5 deg off-center.
+    N_RAYS = 360
+
     def test_perfect_match_is_tp(self):
-        gt = PolarOccupancy(n_rays=4, max_range=80.0)
-        pred = PolarOccupancy(n_rays=4, max_range=80.0)
+        gt = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        pred = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
         gt.add_interval(0, 5.0, 10.0, label="car")
         pred.add_interval(0, 5.0, 10.0, label="car")
 
-        records = compute_ray_collision_records(gt, pred, dist_threshold_m=1.0, forward_angle_deg=360.0)
+        records = _records(gt, pred)
         assert len(records) == 1
         assert records[0]["status"] == "TP"
         assert records[0]["label"] == "car"
 
     def test_gt_only_is_fn(self):
-        gt = PolarOccupancy(n_rays=4, max_range=80.0)
-        pred = PolarOccupancy(n_rays=4, max_range=80.0)
+        gt = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        pred = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
         gt.add_interval(0, 5.0, 10.0, label="pedestrian")
 
-        records = compute_ray_collision_records(gt, pred, dist_threshold_m=1.0, forward_angle_deg=360.0)
+        records = _records(gt, pred)
         assert len(records) == 1
         assert records[0]["status"] == "FN"
         assert records[0]["label"] == "pedestrian"
+        assert records[0]["critical"] is True  # dead ahead, 5m, well within critical zone
 
     def test_pred_only_is_fp(self):
-        gt = PolarOccupancy(n_rays=4, max_range=80.0)
-        pred = PolarOccupancy(n_rays=4, max_range=80.0)
+        gt = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        pred = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
         pred.add_interval(0, 5.0, 10.0, label="truck")
 
-        records = compute_ray_collision_records(gt, pred, dist_threshold_m=1.0, forward_angle_deg=360.0)
+        records = _records(gt, pred)
         assert len(records) == 1
         assert records[0]["status"] == "FP"
         assert records[0]["label"] == "truck"
 
     def test_both_empty_is_excluded(self):
-        gt = PolarOccupancy(n_rays=4, max_range=80.0)
-        pred = PolarOccupancy(n_rays=4, max_range=80.0)
+        gt = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        pred = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
 
-        records = compute_ray_collision_records(gt, pred, dist_threshold_m=1.0, forward_angle_deg=360.0)
+        records = _records(gt, pred)
         assert records == []
 
     def test_distance_beyond_threshold_yields_fn_and_fp(self):
-        gt = PolarOccupancy(n_rays=4, max_range=80.0)
-        pred = PolarOccupancy(n_rays=4, max_range=80.0)
+        gt = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        pred = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
         gt.add_interval(0, 5.0, 6.0, label="car")
         pred.add_interval(0, 15.0, 16.0, label="car")
 
-        records = compute_ray_collision_records(gt, pred, dist_threshold_m=1.0, forward_angle_deg=360.0)
+        records = _records(gt, pred)
         statuses = sorted(r["status"] for r in records)
         assert statuses == ["FN", "FP"]
 
-    def test_forward_only_excludes_rear_ray(self):
-        gt = PolarOccupancy(n_rays=4, max_range=80.0)
-        pred = PolarOccupancy(n_rays=4, max_range=80.0)
-        # ray 2 of 4 is centred near angle pi (directly behind ego)
-        gt.add_interval(2, 5.0, 10.0, label="car")
+    def test_directly_behind_is_excluded(self):
+        gt = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        pred = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        # ray 180 of 360 is centred near angle pi (directly behind ego):
+        # near-zero lateral offset, but longitudinal is negative -> excluded.
+        gt.add_interval(180, 5.0, 10.0, label="car")
 
-        records = compute_ray_collision_records(gt, pred, dist_threshold_m=1.0, forward_angle_deg=120.0)
+        records = _records(gt, pred)
         assert records == []
+
+    def test_lateral_offset_beyond_corridor_width_excludes_side_object(self):
+        gt = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        pred = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        # ray 44 (~44.5 deg off-center) at r=5m has lateral offset ~3.5m,
+        # well beyond any car-sized corridor, even though it's still forward.
+        gt.add_interval(44, 5.0, 6.0, label="car")
+
+        records = _records(gt, pred)
+        assert records == []
+
+    def test_per_class_corridor_width_pedestrian_narrower_than_car(self):
+        # ray 7 (~7.5 deg off-center) at r=10m has lateral offset ~1.3m:
+        # inside the car corridor (+/-1.75m) but outside the pedestrian
+        # corridor (+/-1.0m) -- same geometry, different verdict per class.
+        gt_car = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        pred_car = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        gt_car.add_interval(7, 10.0, 11.0, label="car")
+        assert len(_records(gt_car, pred_car)) == 1
+
+        gt_ped = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        pred_ped = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        gt_ped.add_interval(7, 10.0, 11.0, label="pedestrian")
+        assert _records(gt_ped, pred_ped) == []
+
+    def test_critical_flag_false_beyond_critical_range(self):
+        gt = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        pred = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        # dead ahead, but at 20m -- inside the car corridor, beyond the
+        # default 15m critical range.
+        gt.add_interval(0, 20.0, 21.0, label="car")
+
+        records = _records(gt, pred)
+        assert len(records) == 1
+        assert records[0]["critical"] is False
 
 
 class TestRayCollisionAggregation:
@@ -562,3 +600,12 @@ class TestRayCollisionAggregation:
         assert final["car"]["FN"] == 1
         assert final["car"]["precision"] == pytest.approx(3 / 4)
         assert final["car"]["recall"] == pytest.approx(3 / 4)
+
+    def test_count_critical_only_counts_flagged_records(self):
+        records = [
+            {"ray": 0, "status": "FN", "label": "car", "dist_error_m": None, "critical": True},
+            {"ray": 1, "status": "FP", "label": "car", "dist_error_m": None, "critical": False},
+            {"ray": 2, "status": "TP", "label": "car", "dist_error_m": 0.1},
+        ]
+        counts = count_critical(records)
+        assert counts == {"FN": 1, "FP": 0}

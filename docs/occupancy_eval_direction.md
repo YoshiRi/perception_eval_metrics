@@ -212,6 +212,85 @@ Pred : [5.2m, 6.8m]
 
 ---
 
+## Forward Corridor Safety Zone（自車前方の重点評価）
+
+### 課題：角度ベースの前方windowは遠方で破綻する
+
+Ray-based TP/FP/FN評価では、当初「自車+x軸を中心に±N°」という角度windowで前方領域を定義していた。
+
+しかし角度windowの横方向カバー範囲は
+
+```
+lateral_extent(r) = r * tan(half_angle)
+```
+
+であり、距離rに比例して無限に広がる。例えば±60°のwindowは、40m先では左右に約69mもの範囲を「前方」として扱ってしまい、実質的に隣接車線・歩道まで含んでしまう。
+
+現場の運用感覚としては、
+
+- 自車の目の前（1車線幅程度）のFP/FNは絶対に見逃せない
+- 少し脇にずれた歩行者のFPは、車両のFPほど重大ではない
+
+という距離に依存しない・クラスに依存する感覚があり、角度windowはこれを表現できない。
+
+### 解決：一定横距離のCorridor
+
+角度windowではなく、中心線からの横距離（lateral offset）で前方領域を定義する。
+
+各rayの最近傍占有点（距離r, 角度θ）について、
+
+```
+longitudinal = r * cos(θ)   # 前方成分（>0 が前方）
+lateral      = r * sin(θ)   # 中心線からの横距離
+```
+
+を計算し、
+
+```
+longitudinal > 0  かつ  |lateral| <= half_width
+```
+
+を満たす場合のみ評価対象とする。half_widthは車線幅相当（片側1.75m程度）を基準値とし、距離によらず一定幅の「車線」を評価領域とする。
+
+### クラス別Corridor幅
+
+同じ横位置でも、物体の種類によって運用上の重要度が異なる（例：脇にずれた歩行者のFPは、同じ位置の車両のFPほど気にならない）。そのため corridor の half_width はクラスごとに設定できる。
+
+| クラス | half_width (m) | 備考 |
+|--------|----------------|------|
+| car / truck / bus | 1.75 | 標準的な1車線幅の半分 |
+| pedestrian | 1.0 | 車両より狭いcorridorで評価（脇のFPは許容） |
+| (未設定クラス) | 1.75 (default) | |
+
+GT側・EST側それぞれ、自分自身のクラスのcorridor幅で独立に判定する（不一致ペアでも各々の妥当性で評価する）。
+
+### Critical Zone：至近距離のFP/FNは無条件でhard-fail
+
+「目の前の誤検知・未検知は全て論外」という要求は、precision/recallの重み付けではなく、別枠のカウントとして扱う。
+
+Corridorよりさらに狭く・近い範囲（half_width 1.0m, range 15m を既定値とする）を Critical Zone と定義し、そこに含まれるFN/FPはクラスを問わず
+
+```
+ray_collision_critical: { "FN": n, "FP": n }
+```
+
+として常に別表示する。これは per-class precision/recall には混ぜ込まず、「0であるべき」指標として単独で監視する（1件でもあれば hard-fail 扱い）。
+
+### 実装
+
+`occupancy_metrics/ray_collision.py` の `compute_ray_collision_records` が上記ロジックを実装する。設定は `OccupancyConfig` の
+
+```
+ray_collision_corridor_half_width_m          # クラス別 half_width (dict)
+ray_collision_corridor_default_half_width_m  # 未知クラスの既定 half_width
+ray_collision_critical_half_width_m          # Critical Zone half_width
+ray_collision_critical_range_m               # Critical Zone range
+```
+
+で調整可能。
+
+---
+
 ## Phase 2: Reachable Set評価
 
 Pathが存在しない場合でも、

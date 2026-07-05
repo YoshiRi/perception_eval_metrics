@@ -14,9 +14,12 @@ from .polar import compute_polar_risk, compute_polar_interval_risk
 from .ray_collision import (
     compute_ray_collision_records,
     count_by_class,
+    count_critical,
     empty_counts,
+    empty_critical_counts,
     finalise_counts,
     merge_counts,
+    merge_critical_counts,
 )
 
 
@@ -147,9 +150,13 @@ def evaluate_timestamp(
     ray_records = compute_ray_collision_records(
         gt_polar, pred_polar,
         dist_threshold_m=cfg.ray_collision_dist_threshold_m,
-        forward_angle_deg=cfg.ray_collision_forward_angle_deg,
+        corridor_half_width_m=cfg.ray_collision_corridor_half_width_m,
+        corridor_default_half_width_m=cfg.ray_collision_corridor_default_half_width_m,
+        critical_half_width_m=cfg.ray_collision_critical_half_width_m,
+        critical_range_m=cfg.ray_collision_critical_range_m,
     )
     ray_collision_counts = count_by_class(ray_records, cfg.classes)
+    ray_collision_critical_counts = count_critical(ray_records)
 
     result = {
         "grid": grid_risk,
@@ -162,6 +169,7 @@ def evaluate_timestamp(
         },
         "polar_interval": interval_risk,
         "ray_collision_counts": ray_collision_counts,
+        "ray_collision_critical_counts": ray_collision_critical_counts,
         "n_gt_objects": len(gt_objs),
         "n_est_objects": len(est_objs),
     }
@@ -261,6 +269,7 @@ def run_all(df: pd.DataFrame, cfg: OccupancyConfig) -> Dict:
     ray_collision_totals: Dict[str, Dict] = {
         cls: empty_counts() for cls in cfg.classes
     }
+    ray_collision_critical_totals: Dict = empty_critical_counts()
     total_gt_objects = 0
     total_est_objects = 0
 
@@ -295,6 +304,7 @@ def run_all(df: pd.DataFrame, cfg: OccupancyConfig) -> Dict:
         interval_totals["false_occupied_m"] += iv["interval_false_occupied_m"]
 
         merge_counts(ray_collision_totals, result["ray_collision_counts"])
+        merge_critical_counts(ray_collision_critical_totals, result["ray_collision_critical_counts"])
 
         total_gt_objects += result["n_gt_objects"]
         total_est_objects += result["n_est_objects"]
@@ -345,6 +355,7 @@ def run_all(df: pd.DataFrame, cfg: OccupancyConfig) -> Dict:
         },
         "per_class": per_class_summary,
         "ray_collision": finalise_counts(ray_collision_totals),
+        "ray_collision_critical": dict(ray_collision_critical_totals),
     }
     if roi_totals:
         out["rois"] = {name: _summarise_grid_totals(t) for name, t in roi_totals.items()}

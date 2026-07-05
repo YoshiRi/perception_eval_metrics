@@ -50,9 +50,22 @@ class OccupancyConfig:
     n_rays: int = 360
     polar_max_range_m: float = 80.0
 
-    # ── Ray-based min-collision-distance TP/FP/FN (forward-only) ──────────
+    # ── Ray-based min-collision-distance TP/FP/FN (forward corridor) ──────
     ray_collision_dist_threshold_m: float = 2.0
-    ray_collision_forward_angle_deg: float = 120.0
+    # Per-class lateral half-width (m) from the centerline. A car/truck/bus
+    # gets one lane (±1.75m); a pedestrian gets a narrower corridor since a
+    # pedestrian FP slightly off-center is less concerning than a vehicle FP
+    # in the same spot.
+    ray_collision_corridor_half_width_m: Dict[str, float] = field(
+        default_factory=lambda: {"car": 1.75, "truck": 1.75, "bus": 1.75, "pedestrian": 1.0}
+    )
+    ray_collision_corridor_default_half_width_m: float = 1.75
+    # Critical zone: narrower and nearer than the corridor above. Any FN/FP
+    # here is reported as a separate hard-fail count, never blended into
+    # per-class precision/recall — directly ahead at close range is always
+    # unacceptable regardless of class.
+    ray_collision_critical_half_width_m: float = 1.0
+    ray_collision_critical_range_m: float = 15.0
 
     # ── CSV column mapping ────────────────────────────────────────────────
     col_x: str = "x"
@@ -119,8 +132,18 @@ class OccupancyConfig:
             help="Ray min-collision-distance TP threshold in metres (default: 2.0)",
         )
         parser.add_argument(
-            "--ray-collision-forward-angle", dest="ray_collision_forward_angle_deg", type=float,
-            help="Forward angular window in degrees for ray-collision eval (default: 120.0)",
+            "--ray-collision-corridor-default-width", dest="ray_collision_corridor_default_half_width_m",
+            type=float,
+            help="Default forward-corridor lateral half-width in metres for classes "
+                 "not listed in ray_collision_corridor_half_width_m (default: 1.75)",
+        )
+        parser.add_argument(
+            "--ray-collision-critical-width", dest="ray_collision_critical_half_width_m", type=float,
+            help="Critical-zone lateral half-width in metres (default: 1.0)",
+        )
+        parser.add_argument(
+            "--ray-collision-critical-range", dest="ray_collision_critical_range_m", type=float,
+            help="Critical-zone max range in metres (default: 15.0)",
         )
 
     @classmethod
@@ -154,6 +177,10 @@ class OccupancyConfig:
             ]
         if args.ray_collision_dist_threshold_m is not None:
             cfg.ray_collision_dist_threshold_m = args.ray_collision_dist_threshold_m
-        if args.ray_collision_forward_angle_deg is not None:
-            cfg.ray_collision_forward_angle_deg = args.ray_collision_forward_angle_deg
+        if args.ray_collision_corridor_default_half_width_m is not None:
+            cfg.ray_collision_corridor_default_half_width_m = args.ray_collision_corridor_default_half_width_m
+        if args.ray_collision_critical_half_width_m is not None:
+            cfg.ray_collision_critical_half_width_m = args.ray_collision_critical_half_width_m
+        if args.ray_collision_critical_range_m is not None:
+            cfg.ray_collision_critical_range_m = args.ray_collision_critical_range_m
         return cfg
