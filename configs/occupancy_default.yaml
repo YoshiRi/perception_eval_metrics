@@ -23,9 +23,22 @@ distance_weight_type: inverse_square
 n_rays: 360
 polar_max_range_m: 80.0
 
-# Ray-based min-collision-distance TP/FP/FN (forward-only, per class)
+# Ray-based min-collision-distance TP/FP/FN (forward corridor, per class)
 ray_collision_dist_threshold_m: 2.0
-ray_collision_forward_angle_deg: 120.0
+
+# Per-class lateral corridor half-width (m) from the centerline — a lane's
+# worth for vehicles, narrower for pedestrians.
+ray_collision_corridor_half_width_m:
+  car: 1.75
+  truck: 1.75
+  bus: 1.75
+  pedestrian: 1.0
+ray_collision_corridor_default_half_width_m: 1.75
+
+# Critical zone: narrower + nearer than the corridor above. Any FN/FP here
+# is reported as a separate hard-fail count, regardless of class.
+ray_collision_critical_half_width_m: 1.0
+ray_collision_critical_range_m: 15.0
 
 # CSV column mapping — all five columns are required
 col_x: x

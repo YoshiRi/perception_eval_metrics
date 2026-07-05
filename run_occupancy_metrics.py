@@ -84,8 +84,11 @@ def print_results(results: dict, cfg: OccupancyConfig) -> None:
     print(f"  False occupied (hallucinated):      {iv['false_occupied_m']:.2f} m (total across rays)")
 
     rc = results["ray_collision"]
-    print(_sep("5  Ray-based Min-Collision-Distance TP/FP/FN (forward only)"))
-    print(f"  forward window: ±{cfg.ray_collision_forward_angle_deg / 2:.0f}°   dist threshold: {cfg.ray_collision_dist_threshold_m} m")
+    print(_sep("5  Ray-based Min-Collision-Distance TP/FP/FN (forward corridor)"))
+    widths = cfg.ray_collision_corridor_half_width_m
+    width_str = ", ".join(f"{cls}=±{w:.2f}m" for cls, w in widths.items())
+    print(f"  corridor half-width: {width_str} (default ±{cfg.ray_collision_corridor_default_half_width_m:.2f}m)")
+    print(f"  dist threshold: {cfg.ray_collision_dist_threshold_m} m")
     print(f"  {'class':>12s}  {'TP':>8s}  {'FP':>8s}  {'FN':>8s}  {'precision':>10s}  {'recall':>10s}")
     print(f"  {'-'*12}  {'-'*8}  {'-'*8}  {'-'*8}  {'-'*10}  {'-'*10}")
     for cls in cfg.classes:
@@ -100,6 +103,15 @@ def print_results(results: dict, cfg: OccupancyConfig) -> None:
             f"  {'(unknown)':>12s}  {unk['TP']:>8,}  {unk['FP']:>8,}  {unk['FN']:>8,}"
             f"  {unk['precision']:>10.4f}  {unk['recall']:>10.4f}"
         )
+
+    crit = results["ray_collision_critical"]
+    status = "OK" if crit["FN"] == 0 and crit["FP"] == 0 else "!! HARD-FAIL !!"
+    print(_sep("6  Critical Zone Hard-Fail Count (any class, unconditional)"))
+    print(
+        f"  zone: ±{cfg.ray_collision_critical_half_width_m:.2f}m, "
+        f"≤{cfg.ray_collision_critical_range_m:.0f}m directly ahead"
+    )
+    print(f"  FN: {crit['FN']:>4,}   FP: {crit['FP']:>4,}   [{status}]")
 
     print(_sep())
 
@@ -119,7 +131,10 @@ def save_results(results: dict, cfg: OccupancyConfig) -> Path:
             "distance_weight_type": cfg.distance_weight_type,
             "n_rays": cfg.n_rays,
             "ray_collision_dist_threshold_m": cfg.ray_collision_dist_threshold_m,
-            "ray_collision_forward_angle_deg": cfg.ray_collision_forward_angle_deg,
+            "ray_collision_corridor_half_width_m": cfg.ray_collision_corridor_half_width_m,
+            "ray_collision_corridor_default_half_width_m": cfg.ray_collision_corridor_default_half_width_m,
+            "ray_collision_critical_half_width_m": cfg.ray_collision_critical_half_width_m,
+            "ray_collision_critical_range_m": cfg.ray_collision_critical_range_m,
         },
         "n_timestamps": results["n_timestamps"],
         "n_gt_objects_total": results["n_gt_objects_total"],
@@ -129,6 +144,7 @@ def save_results(results: dict, cfg: OccupancyConfig) -> Path:
         "polar_interval": results["polar_interval"],
         "per_class": results["per_class"],
         "ray_collision": results["ray_collision"],
+        "ray_collision_critical": results["ray_collision_critical"],
     }
     with open(out / "summary.json", "w") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
