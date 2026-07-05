@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -18,13 +18,18 @@ class PolarOccupancy:
         self.intervals: List[List[Tuple[float, float]]] = [
             [] for _ in range(n_rays)
         ]
+        # labels[i][j] = class label of intervals[i][j] (None if not provided)
+        self.labels: List[List[Optional[str]]] = [[] for _ in range(n_rays)]
 
-    def add_interval(self, ray_idx: int, r_near: float, r_far: float) -> None:
+    def add_interval(
+        self, ray_idx: int, r_near: float, r_far: float, label: Optional[str] = None,
+    ) -> None:
         r_near = max(0.0, r_near)
         r_far = min(self.max_range, r_far)
         if r_near >= r_far:
             return
         self.intervals[ray_idx].append((r_near, r_far))
+        self.labels[ray_idx].append(label)
 
     def nearest_distance(self, ray_idx: int) -> float:
         """Nearest occupied distance along a ray. max_range if empty."""
@@ -34,6 +39,14 @@ class PolarOccupancy:
 
     def nearest_distances(self) -> np.ndarray:
         return np.array([self.nearest_distance(i) for i in range(self.n_rays)])
+
+    def nearest_label(self, ray_idx: int) -> Optional[str]:
+        """Class label of the nearest occupied interval along a ray. None if empty."""
+        ivs = self.intervals[ray_idx]
+        if not ivs:
+            return None
+        closest = min(range(len(ivs)), key=lambda j: ivs[j][0])
+        return self.labels[ray_idx][closest]
 
     def merged_intervals(self, ray_idx: int) -> List[Tuple[float, float]]:
         """Return merged (non-overlapping) intervals for a ray."""

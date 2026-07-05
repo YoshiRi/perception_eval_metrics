@@ -76,7 +76,7 @@ def bboxes_to_polar(
                 f"Object at ({cx}, {cy}) has NaN bbox dimensions "
                 f"(w={w}, l={l}, yaw={yaw}). All objects must have valid bbox values."
             )
-        _add_bbox_to_polar(polar, cx, cy, w, l, yaw)
+        _add_bbox_to_polar(polar, cx, cy, w, l, yaw, label=row.get("label"))
 
     return polar
 
@@ -84,6 +84,7 @@ def bboxes_to_polar(
 def _add_bbox_to_polar(
     polar: PolarOccupancy,
     cx: float, cy: float, w: float, l: float, yaw: float,
+    label: str | None = None,
 ) -> None:
     cos_y = np.cos(yaw)
     sin_y = np.sin(yaw)
@@ -118,4 +119,4 @@ def _add_bbox_to_polar(
         rays = list(range(ray_start, polar.n_rays)) + list(range(0, ray_end + 1))
 
     for ri in rays:
-        polar.add_interval(ri, r_near, r_far)
+        polar.add_interval(ri, r_near, r_far, label=label)

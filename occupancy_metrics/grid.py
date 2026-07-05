@@ -53,6 +53,17 @@ class OccupancyGrid:
     def in_range_mask(self) -> np.ndarray:
         return self.distance_map() <= self.range_m
 
+    def roi_mask(
+        self, x_min: float, x_max: float, y_min: float, y_max: float
+    ) -> np.ndarray:
+        """Boolean mask for a rectangular world-coordinate ROI."""
+        n = self.data.shape[0]
+        idx = np.arange(n) + 0.5
+        wx = idx * self.resolution - self.range_m  # world x per column
+        wy = idx * self.resolution - self.range_m  # world y per row
+        WX, WY = np.meshgrid(wx, wy)
+        return (WX >= x_min) & (WX <= x_max) & (WY >= y_min) & (WY <= y_max)
+
     def fill_rotated_box(
         self, cx: float, cy: float, w: float, l: float, yaw: float
     ) -> None:

@@ -10,6 +10,20 @@ import yaml
 
 
 @dataclass
+class ROI:
+    """Named rectangular region of interest in world coordinates."""
+    name: str
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+
+    @classmethod
+    def from_dict(cls, d: Dict) -> "ROI":
+        return cls(**d)
+
+
+@dataclass
 class OccupancyConfig:
     # ── Required ──────────────────────────────────────────────────────────
     csv_path: str
@@ -36,6 +50,10 @@ class OccupancyConfig:
     n_rays: int = 360
     polar_max_range_m: float = 80.0
 
+    # ── Ray-based min-collision-distance TP/FP/FN (forward-only) ──────────
+    ray_collision_dist_threshold_m: float = 2.0
+    ray_collision_forward_angle_deg: float = 120.0
+
     # ── CSV column mapping ────────────────────────────────────────────────
     col_x: str = "x"
     col_y: str = "y"
@@ -43,9 +61,9 @@ class OccupancyConfig:
     col_l: str = "l"
     col_yaw: str = "yaw"
 
-    # ── Required bbox columns ────────────────────────────────────────────────
-    # The CSV must contain w, l, yaw columns (or the names set above).
-    # If they are missing, bboxes_to_grid / bboxes_to_polar will raise.
+    # ── Regions of interest ─────────────────────────────────────────────────
+    # After full-grid evaluation, metrics are also computed per ROI.
+    rois: List[ROI] = field(default_factory=list)
 
     # ── Serialisation ─────────────────────────────────────────────────────
 
@@ -57,11 +75,16 @@ class OccupancyConfig:
     def from_yaml(cls, path: str | Path) -> "OccupancyConfig":
         with open(path) as f:
             data = yaml.safe_load(f)
-        return cls(**data)
+        raw_rois = data.pop("rois", [])
+        cfg = cls(**data)
+        cfg.rois = [ROI.from_dict(r) for r in raw_rois]
+        return cfg
 
     def to_yaml(self, path: str | Path) -> None:
+        d = asdict(self)
+        d["rois"] = [asdict(r) for r in self.rois]
         with open(path, "w") as f:
-            yaml.dump(asdict(self), f, allow_unicode=True, sort_keys=False)
+            yaml.dump(d, f, allow_unicode=True, sort_keys=False)
 
     # ── CLI override ──────────────────────────────────────────────────────
 
@@ -90,6 +113,14 @@ class OccupancyConfig:
         parser.add_argument(
             "--vis-exclude",
             help="Comma-separated visibility values to exclude",
+        )
+        parser.add_argument(
+            "--ray-collision-threshold", dest="ray_collision_dist_threshold_m", type=float,
+            help="Ray min-collision-distance TP threshold in metres (default: 2.0)",
+        )
+        parser.add_argument(
+            "--ray-collision-forward-angle", dest="ray_collision_forward_angle_deg", type=float,
+            help="Forward angular window in degrees for ray-collision eval (default: 120.0)",
         )
 
     @classmethod
@@ -121,4 +152,8 @@ class OccupancyConfig:
             cfg.visibility_exclude = [
                 v.strip() for v in args.vis_exclude.split(",")
             ]
+        if args.ray_collision_dist_threshold_m is not None:
+            cfg.ray_collision_dist_threshold_m = args.ray_collision_dist_threshold_m
+        if args.ray_collision_forward_angle_deg is not None:
+            cfg.ray_collision_forward_angle_deg = args.ray_collision_forward_angle_deg
         return cfg

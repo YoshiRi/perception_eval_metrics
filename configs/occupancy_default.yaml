@@ -23,6 +23,10 @@ distance_weight_type: inverse_square
 n_rays: 360
 polar_max_range_m: 80.0
 
+# Ray-based min-collision-distance TP/FP/FN (forward-only, per class)
+ray_collision_dist_threshold_m: 2.0
+ray_collision_forward_angle_deg: 120.0
+
 # CSV column mapping — all five columns are required
 col_x: x
 col_y: y
