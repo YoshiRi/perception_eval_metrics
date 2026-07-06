@@ -13,6 +13,7 @@ from .converters import bboxes_to_grid, bboxes_to_polar
 from .polar import compute_polar_risk, compute_polar_interval_risk
 from .ray_collision import (
     compute_ray_collision_records,
+    compute_roadside_records,
     count_by_class,
     count_critical,
     empty_counts,
@@ -94,12 +95,16 @@ def compute_occupancy_risk(
 
 def _filter_objects(
     df: pd.DataFrame, cfg: OccupancyConfig, source: str,
-    *, skip_visibility_filter: bool = False,
+    *, skip_visibility_filter: bool = False, classes: List[str] | None = None,
 ) -> pd.DataFrame:
-    """Filter DataFrame to objects within evaluation scope."""
+    """Filter DataFrame to objects within evaluation scope.
+
+    `classes` overrides `cfg.classes` for callers that need a wider label
+    scope (e.g. including roadside_classes for the ray-based metrics).
+    """
     mask = (
         (df["source"] == source)
-        & (df["label"].isin(cfg.classes))
+        & (df["label"].isin(classes if classes is not None else cfg.classes))
     )
 
     dist = np.sqrt(df[cfg.col_x] ** 2 + df[cfg.col_y] ** 2)
@@ -141,8 +146,16 @@ def evaluate_timestamp(
                 gt_grid, pred_grid, **common, roi_mask=rmask,
             )
 
-    gt_polar = bboxes_to_polar(gt_objs, cfg)
-    pred_polar = bboxes_to_polar(est_objs, cfg)
+    # Ray-based metrics (Stixel, ray-collision corridor, roadside VRU) need a
+    # wider label scope than the grid metrics: roadside_classes (e.g.
+    # "bicycle") may not be in cfg.classes, since that list also drives the
+    # grid/per-class Safety/Availability breakdown above.
+    ray_classes = list(dict.fromkeys(cfg.classes + cfg.roadside_classes))
+    gt_objs_ray = _filter_objects(ts_df, cfg, "GT", classes=ray_classes)
+    est_objs_ray = _filter_objects(ts_df, cfg, "EST", classes=ray_classes)
+
+    gt_polar = bboxes_to_polar(gt_objs_ray, cfg)
+    pred_polar = bboxes_to_polar(est_objs_ray, cfg)
 
     polar_risk = compute_polar_risk(gt_polar, pred_polar)
     interval_risk = compute_polar_interval_risk(gt_polar, pred_polar)
@@ -158,6 +171,15 @@ def evaluate_timestamp(
     ray_collision_counts = count_by_class(ray_records, cfg.classes)
     ray_collision_critical_counts = count_critical(ray_records)
 
+    roadside_records = compute_roadside_records(
+        gt_polar, pred_polar,
+        dist_threshold_m=cfg.roadside_dist_threshold_m,
+        target_classes=cfg.roadside_classes,
+        lateral_min_m=cfg.roadside_lateral_min_m,
+        lateral_max_m=cfg.roadside_lateral_max_m,
+    )
+    roadside_counts = count_by_class(roadside_records, cfg.roadside_classes)
+
     result = {
         "grid": grid_risk,
         "polar": {
@@ -169,6 +191,7 @@ def evaluate_timestamp(
         },
         "polar_interval": interval_risk,
         "ray_collision_counts": ray_collision_counts,
+        "roadside_counts": roadside_counts,
         "ray_collision_critical_counts": ray_collision_critical_counts,
         "n_gt_objects": len(gt_objs),
         "n_est_objects": len(est_objs),
@@ -270,6 +293,9 @@ def run_all(df: pd.DataFrame, cfg: OccupancyConfig) -> Dict:
         cls: empty_counts() for cls in cfg.classes
     }
     ray_collision_critical_totals: Dict = empty_critical_counts()
+    roadside_totals: Dict[str, Dict] = {
+        cls: empty_counts() for cls in cfg.roadside_classes
+    }
     total_gt_objects = 0
     total_est_objects = 0
 
@@ -305,6 +331,7 @@ def run_all(df: pd.DataFrame, cfg: OccupancyConfig) -> Dict:
 
         merge_counts(ray_collision_totals, result["ray_collision_counts"])
         merge_critical_counts(ray_collision_critical_totals, result["ray_collision_critical_counts"])
+        merge_counts(roadside_totals, result["roadside_counts"])
 
         total_gt_objects += result["n_gt_objects"]
         total_est_objects += result["n_est_objects"]
@@ -356,6 +383,7 @@ def run_all(df: pd.DataFrame, cfg: OccupancyConfig) -> Dict:
         "per_class": per_class_summary,
         "ray_collision": finalise_counts(ray_collision_totals),
         "ray_collision_critical": dict(ray_collision_critical_totals),
+        "roadside": finalise_counts(roadside_totals),
     }
     if roi_totals:
         out["rois"] = {name: _summarise_grid_totals(t) for name, t in roi_totals.items()}

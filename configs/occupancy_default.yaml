@@ -40,6 +40,16 @@ ray_collision_corridor_default_half_width_m: 1.75
 ray_collision_critical_half_width_m: 1.0
 ray_collision_critical_range_m: 15.0
 
+# Roadside VRU (pedestrian/bicycle) lost/false-detection focus: a lateral
+# band *outside* the forward corridor (sidewalk/shoulder), tracked as its
+# own TP/FP/FN separate from the vehicle-focused corridor above.
+roadside_classes:
+  - pedestrian
+  - bicycle
+roadside_dist_threshold_m: 2.0
+roadside_lateral_min_m: 1.0
+roadside_lateral_max_m: 4.5
+
 # CSV column mapping — all five columns are required
 col_x: x
 col_y: y
