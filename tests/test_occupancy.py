@@ -11,6 +11,7 @@ from occupancy_metrics.converters import bboxes_to_grid, bboxes_to_polar
 from occupancy_metrics.compute import compute_occupancy_risk, evaluate_timestamp, run_all
 from occupancy_metrics.ray_collision import (
     compute_ray_collision_records,
+    compute_roadside_records,
     count_by_class,
     count_critical,
     finalise_counts,
@@ -478,6 +479,42 @@ class TestEndToEnd:
         assert result["grid"]["safety_risk_cells"] > 0
         assert "car" in result["per_class"]
         assert "car" in result["ray_collision"]
+        assert "pedestrian" in result["roadside"]
+        assert "bicycle" in result["roadside"]
+
+    def test_roadside_metric_sees_bicycle_even_when_not_in_cfg_classes(self):
+        # cfg.classes (used for grid metrics) deliberately omits "bicycle" --
+        # it must still reach the roadside metric via cfg.roadside_classes,
+        # not be silently dropped before bboxes_to_polar.
+        rows = [
+            {
+                "unix_time": 1000, "source": "GT", "status": "TP", "label": "bicycle",
+                "x": 10.0, "y": 3.5, "w": 0.6, "l": 1.8, "yaw": 0.0,
+                "confidence": np.nan, "visibility": "FULL", "r": "0-20",
+                "x_error": 0.1, "y_error": 0.1, "yaw_error": 0.01, "speed_error": 0.5,
+            },
+            {
+                "unix_time": 1000, "source": "EST", "status": "TP", "label": "bicycle",
+                "x": 10.0, "y": 3.5, "w": 0.6, "l": 1.8, "yaw": 0.0,
+                "confidence": 0.9, "visibility": np.nan, "r": "0-20",
+                "x_error": 0.1, "y_error": 0.1, "yaw_error": 0.01, "speed_error": 0.5,
+            },
+        ]
+        df = pd.DataFrame(rows)
+        cfg = OccupancyConfig(
+            csv_path="", output_dir="",
+            resolution_m=0.5, range_m=40.0,
+            classes=["car", "truck", "bus", "pedestrian"],
+            roadside_classes=["pedestrian", "bicycle"],
+        )
+        result = run_all(df, cfg)
+        # bbox spans several rays at this distance, so TP > 1 is expected;
+        # the point is that it's nonzero at all (bicycle wasn't dropped).
+        assert result["roadside"]["bicycle"]["TP"] > 0
+        assert result["roadside"]["bicycle"]["FP"] == 0
+        assert result["roadside"]["bicycle"]["FN"] == 0
+        # grid metrics stay scoped to cfg.classes: bicycle contributes nothing there.
+        assert "bicycle" not in result["per_class"]
 
 
 class TestRayCollisionRecords:
@@ -609,3 +646,79 @@ class TestRayCollisionAggregation:
         ]
         counts = count_critical(records)
         assert counts == {"FN": 1, "FP": 0}
+
+
+class TestRoadsideRecords:
+    N_RAYS = 360
+    _TARGETS = ["pedestrian", "bicycle"]
+
+    def _records(self, gt, pred, dist_threshold_m=1.0, lateral_min=1.0, lateral_max=4.5):
+        return compute_roadside_records(
+            gt, pred,
+            dist_threshold_m=dist_threshold_m,
+            target_classes=self._TARGETS,
+            lateral_min_m=lateral_min,
+            lateral_max_m=lateral_max,
+        )
+
+    def test_in_band_pedestrian_match_is_tp(self):
+        # ray 20 (~20.5 deg off-center) at r=10m has lateral offset ~3.5m,
+        # inside the default roadside band [1.0m, 4.5m].
+        gt = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        pred = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        gt.add_interval(20, 10.0, 11.0, label="pedestrian")
+        pred.add_interval(20, 10.0, 11.0, label="pedestrian")
+
+        records = self._records(gt, pred)
+        assert len(records) == 1
+        assert records[0]["status"] == "TP"
+
+    def test_gt_only_in_band_is_fn(self):
+        gt = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        pred = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        gt.add_interval(20, 10.0, 11.0, label="bicycle")
+
+        records = self._records(gt, pred)
+        assert len(records) == 1
+        assert records[0]["status"] == "FN"
+        assert records[0]["label"] == "bicycle"
+
+    def test_too_close_to_centerline_excluded(self):
+        # dead ahead: lateral offset ~0, below the band's inner bound (1.0m),
+        # even though it's within the forward corridor's own range.
+        gt = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        pred = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        gt.add_interval(0, 5.0, 6.0, label="pedestrian")
+
+        records = self._records(gt, pred)
+        assert records == []
+
+    def test_beyond_outer_bound_excluded(self):
+        # ray 60 (~60.5 deg off-center) at r=10m has lateral offset ~8.7m,
+        # beyond the band's outer bound (4.5m).
+        gt = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        pred = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        gt.add_interval(60, 10.0, 11.0, label="pedestrian")
+
+        records = self._records(gt, pred)
+        assert records == []
+
+    def test_directly_behind_excluded(self):
+        gt = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        pred = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        gt.add_interval(180, 10.0, 11.0, label="pedestrian")
+
+        records = self._records(gt, pred)
+        assert records == []
+
+    def test_non_target_class_in_band_excluded(self):
+        # Same in-band geometry as test_in_band_pedestrian_match_is_tp, but
+        # labeled "car" -- not in the roadside target_classes allowlist, so
+        # it must not be counted here even though it's geometrically in-band.
+        gt = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        pred = PolarOccupancy(n_rays=self.N_RAYS, max_range=80.0)
+        gt.add_interval(20, 10.0, 11.0, label="car")
+        pred.add_interval(20, 10.0, 11.0, label="car")
+
+        records = self._records(gt, pred)
+        assert records == []

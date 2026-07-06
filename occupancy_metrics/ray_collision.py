@@ -136,6 +136,87 @@ def compute_ray_collision_records(
     return records
 
 
+def _in_lateral_band(
+    distance: float, angle: float, lateral_min_m: float, lateral_max_m: float, max_range: float
+) -> bool:
+    if distance >= max_range:
+        return False
+    longitudinal = distance * math.cos(angle)
+    if longitudinal <= 0.0:
+        return False
+    lateral = abs(distance * math.sin(angle))
+    return lateral_min_m <= lateral <= lateral_max_m
+
+
+def compute_roadside_records(
+    gt_polar: PolarOccupancy,
+    pred_polar: PolarOccupancy,
+    dist_threshold_m: float,
+    target_classes: List[str],
+    lateral_min_m: float,
+    lateral_max_m: float,
+) -> List[Dict]:
+    """Per forward-roadside-ray TP/FP/FN records for vulnerable road users.
+
+    Unlike `compute_ray_collision_records` (a corridor from the centerline
+    outward), this looks at a band *outside* the corridor -- e.g. the
+    sidewalk/shoulder -- and restricts to `target_classes` (e.g. pedestrian,
+    bicycle), so a pedestrian/bicycle lost or falsely detected next to the
+    road is tracked on its own, separate from the vehicle-focused corridor.
+    """
+    n_rays = gt_polar.n_rays
+    max_range = gt_polar.max_range
+    gt_dists = gt_polar.nearest_distances()
+    pred_dists = pred_polar.nearest_distances()
+    target_set = set(target_classes)
+
+    records: List[Dict] = []
+
+    for ray_idx in range(n_rays):
+        angle = _ray_center_angle(ray_idx, n_rays)
+
+        gt_occ = gt_dists[ray_idx] < max_range
+        pred_occ = pred_dists[ray_idx] < max_range
+        gt_label = gt_polar.nearest_label(ray_idx) if gt_occ else None
+        pred_label = pred_polar.nearest_label(ray_idx) if pred_occ else None
+
+        gt_in = (
+            gt_occ and gt_label in target_set
+            and _in_lateral_band(float(gt_dists[ray_idx]), angle, lateral_min_m, lateral_max_m, max_range)
+        )
+        pred_in = (
+            pred_occ and pred_label in target_set
+            and _in_lateral_band(float(pred_dists[ray_idx]), angle, lateral_min_m, lateral_max_m, max_range)
+        )
+
+        if not gt_in and not pred_in:
+            continue
+
+        if gt_in and pred_in:
+            diff = float(abs(gt_dists[ray_idx] - pred_dists[ray_idx]))
+            if diff <= dist_threshold_m:
+                records.append(
+                    {"ray": ray_idx, "status": "TP", "label": gt_label, "dist_error_m": diff}
+                )
+                continue
+            records.append(
+                {"ray": ray_idx, "status": "FN", "label": gt_label, "dist_error_m": diff}
+            )
+            records.append(
+                {"ray": ray_idx, "status": "FP", "label": pred_label, "dist_error_m": diff}
+            )
+        elif gt_in:
+            records.append(
+                {"ray": ray_idx, "status": "FN", "label": gt_label, "dist_error_m": None}
+            )
+        else:
+            records.append(
+                {"ray": ray_idx, "status": "FP", "label": pred_label, "dist_error_m": None}
+            )
+
+    return records
+
+
 def empty_counts() -> Dict:
     return {"TP": 0, "FP": 0, "FN": 0}
 

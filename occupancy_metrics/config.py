@@ -67,6 +67,15 @@ class OccupancyConfig:
     ray_collision_critical_half_width_m: float = 1.0
     ray_collision_critical_range_m: float = 15.0
 
+    # ── Roadside VRU (歩行者・自転車) Lost/False-Detection Focus ────────────
+    # A lateral band *outside* the forward corridor (e.g. sidewalk/shoulder),
+    # restricted to vulnerable-road-user classes, tracking their own
+    # TP/FP/FN separately from the vehicle-focused corridor above.
+    roadside_classes: List[str] = field(default_factory=lambda: ["pedestrian", "bicycle"])
+    roadside_dist_threshold_m: float = 2.0
+    roadside_lateral_min_m: float = 1.0
+    roadside_lateral_max_m: float = 4.5
+
     # ── CSV column mapping ────────────────────────────────────────────────
     col_x: str = "x"
     col_y: str = "y"
@@ -145,6 +154,22 @@ class OccupancyConfig:
             "--ray-collision-critical-range", dest="ray_collision_critical_range_m", type=float,
             help="Critical-zone max range in metres (default: 15.0)",
         )
+        parser.add_argument(
+            "--roadside-classes",
+            help="Comma-separated class list for the roadside VRU focus metric (default: pedestrian,bicycle)",
+        )
+        parser.add_argument(
+            "--roadside-dist-threshold", dest="roadside_dist_threshold_m", type=float,
+            help="Roadside VRU TP distance threshold in metres (default: 2.0)",
+        )
+        parser.add_argument(
+            "--roadside-lateral-min", dest="roadside_lateral_min_m", type=float,
+            help="Roadside band inner lateral bound in metres (default: 1.0)",
+        )
+        parser.add_argument(
+            "--roadside-lateral-max", dest="roadside_lateral_max_m", type=float,
+            help="Roadside band outer lateral bound in metres (default: 4.5)",
+        )
 
     @classmethod
     def from_args(cls, args) -> "OccupancyConfig":
@@ -183,4 +208,12 @@ class OccupancyConfig:
             cfg.ray_collision_critical_half_width_m = args.ray_collision_critical_half_width_m
         if args.ray_collision_critical_range_m is not None:
             cfg.ray_collision_critical_range_m = args.ray_collision_critical_range_m
+        if args.roadside_classes:
+            cfg.roadside_classes = [c.strip() for c in args.roadside_classes.split(",")]
+        if args.roadside_dist_threshold_m is not None:
+            cfg.roadside_dist_threshold_m = args.roadside_dist_threshold_m
+        if args.roadside_lateral_min_m is not None:
+            cfg.roadside_lateral_min_m = args.roadside_lateral_min_m
+        if args.roadside_lateral_max_m is not None:
+            cfg.roadside_lateral_max_m = args.roadside_lateral_max_m
         return cfg

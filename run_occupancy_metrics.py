@@ -113,6 +113,28 @@ def print_results(results: dict, cfg: OccupancyConfig) -> None:
     )
     print(f"  FN: {crit['FN']:>4,}   FP: {crit['FP']:>4,}   [{status}]")
 
+    rs = results["roadside"]
+    print(_sep("7  Roadside VRU (Pedestrian/Bicycle) Lost/False-Detection"))
+    print(
+        f"  band: {cfg.roadside_lateral_min_m:.2f}m - {cfg.roadside_lateral_max_m:.2f}m lateral, "
+        f"classes: {cfg.roadside_classes}"
+    )
+    print(f"  dist threshold: {cfg.roadside_dist_threshold_m} m")
+    print(f"  {'class':>12s}  {'TP':>8s}  {'FP':>8s}  {'FN':>8s}  {'precision':>10s}  {'recall':>10s}")
+    print(f"  {'-'*12}  {'-'*8}  {'-'*8}  {'-'*8}  {'-'*10}  {'-'*10}")
+    for cls in cfg.roadside_classes:
+        c = rs.get(cls, {"TP": 0, "FP": 0, "FN": 0, "precision": 0.0, "recall": 0.0})
+        print(
+            f"  {cls:>12s}  {c['TP']:>8,}  {c['FP']:>8,}  {c['FN']:>8,}"
+            f"  {c['precision']:>10.4f}  {c['recall']:>10.4f}"
+        )
+    unk = rs.get("__unknown__", {"TP": 0, "FP": 0, "FN": 0, "precision": 0.0, "recall": 0.0})
+    if unk["TP"] or unk["FP"] or unk["FN"]:
+        print(
+            f"  {'(unknown)':>12s}  {unk['TP']:>8,}  {unk['FP']:>8,}  {unk['FN']:>8,}"
+            f"  {unk['precision']:>10.4f}  {unk['recall']:>10.4f}"
+        )
+
     print(_sep())
 
 
@@ -135,6 +157,10 @@ def save_results(results: dict, cfg: OccupancyConfig) -> Path:
             "ray_collision_corridor_default_half_width_m": cfg.ray_collision_corridor_default_half_width_m,
             "ray_collision_critical_half_width_m": cfg.ray_collision_critical_half_width_m,
             "ray_collision_critical_range_m": cfg.ray_collision_critical_range_m,
+            "roadside_classes": cfg.roadside_classes,
+            "roadside_dist_threshold_m": cfg.roadside_dist_threshold_m,
+            "roadside_lateral_min_m": cfg.roadside_lateral_min_m,
+            "roadside_lateral_max_m": cfg.roadside_lateral_max_m,
         },
         "n_timestamps": results["n_timestamps"],
         "n_gt_objects_total": results["n_gt_objects_total"],
@@ -145,6 +171,7 @@ def save_results(results: dict, cfg: OccupancyConfig) -> Path:
         "per_class": results["per_class"],
         "ray_collision": results["ray_collision"],
         "ray_collision_critical": results["ray_collision_critical"],
+        "roadside": results["roadside"],
     }
     with open(out / "summary.json", "w") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)

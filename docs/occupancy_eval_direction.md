@@ -291,6 +291,43 @@ ray_collision_critical_range_m               # Critical Zone range
 
 ---
 
+## Roadside VRU Focus（路肩の歩行者・自転車のロスト/誤検知）
+
+### 課題：Corridorの外側は評価対象外になっている
+
+Forward Corridorは自車前方の一定幅（車線相当）だけを評価する設計であり、意図的にそれより外側（歩道・路肩）を評価対象から除外している。しかし運用上は「歩道にいる歩行者・自転車を見失う／存在しない歩行者・自転車を誤検知する」という別の懸念があり、これはCorridorの対象外なので現状どの指標にも現れない。
+
+### 解決：Corridorの外側に、対象クラス限定の帯（Band）を定義する
+
+Corridorと同じ `longitudinal = r*cos(θ)`, `lateral = r*sin(θ)` の分解を再利用し、中心線からの横距離が
+
+```
+lateral_min <= |lateral| <= lateral_max
+```
+
+を満たす帯（歩道・路肩に相当する側方領域）を定義する。Corridorが「中心線から一定距離**以内**」なのに対し、こちらは「一定距離の**範囲内**（内側・外側の両方に境界がある帯）」という点が異なる。
+
+対象はクラスの許可リスト（既定: pedestrian, bicycle）に限定する。車両などその他のクラスは、たとえ幾何学的にこの帯の中にあっても対象外（Corridor側で評価される）。
+
+TP/FP/FNの判定ロジック・precision/recallの計算は Forward Corridor と同じ枠組み（`count_by_class` / `finalise_counts`）を再利用する。Critical Zoneのような「hard-fail」の別枠は設けず、Forward Corridorと対等な「focus/track」用の指標として per-class precision/recall のみを報告する。
+
+### 実装
+
+`occupancy_metrics/ray_collision.py` の `compute_roadside_records` が上記ロジックを実装する。設定は `OccupancyConfig` の
+
+```
+roadside_classes           # 対象クラスの許可リスト（既定: pedestrian, bicycle）
+roadside_dist_threshold_m  # TP判定の距離しきい値
+roadside_lateral_min_m     # 帯の内側境界（中心線からの横距離）
+roadside_lateral_max_m     # 帯の外側境界
+```
+
+で調整可能。
+
+注意：`occupancy_metrics/compute.py` の `evaluate_timestamp` は、GT/EST オブジェクトを Polar 表現に変換する際、`cfg.classes` と `cfg.roadside_classes` の和集合でフィルタする（`_filter_objects` の `classes` 引数）。これは `roadside_classes` に `cfg.classes` に含まれないクラス（例: bicycle）が含まれていても、Ray系の指標（Forward Corridor / Roadside VRU / Polar Stixel）からそのクラスが除外されないようにするため。Grid系の指標（Safety/Availability、per-classブレークダウン）は従来通り `cfg.classes` のみでフィルタされ、この変更の影響を受けない。
+
+---
+
 ## Phase 2: Reachable Set評価
 
 Pathが存在しない場合でも、
